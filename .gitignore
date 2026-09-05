@@ -1,0 +1,27 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Build artifacts
+/bin/
+/dist/
+*.exe
+*.test
+
+# Go tooling
+*.out
+coverage.html
+go.work
+go.work.sum
+
+# Load test output
+loadtest/results/
+loadtest/summary.json
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

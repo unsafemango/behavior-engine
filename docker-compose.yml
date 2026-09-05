@@ -1,0 +1,124 @@
+name: behavior-engine
+
+services:
+  # Official Apache Kafka image (KRaft mode, no Zookeeper needed). We use
+  # this instead of a third-party image because Bitnami's Docker Hub
+  # images now sit behind a paid "Secure Images" subscription and most
+  # historical tags (including the one this project used to pin) have
+  # been pulled from the free tier.
+  kafka:
+    image: apache/kafka:3.7.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,PLAINTEXT_HOST://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    ports:
+      - "9092:9092"   # in-network (service name "kafka") -- what the Go services use
+      - "29092:29092" # host-reachable, e.g. `kafka-console-consumer --bootstrap-server localhost:29092`
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: behavior
+      POSTGRES_PASSWORD: behavior
+      POSTGRES_DB: behavior_engine
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U behavior -d behavior_engine"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  ingestion-api:
+    build:
+      context: .
+      args:
+        CMD_PATH: ingestion-api
+    environment: &common_env
+      SERVICE_NAME: ingestion-api
+      HTTP_ADDR: ":8080"
+      LOG_LEVEL: info
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_TOPIC: behavior.events
+      KAFKA_GROUP_ID: profile-consumer
+      POSTGRES_DSN: postgres://behavior:behavior@postgres:5432/behavior_engine?sslmode=disable
+      REDIS_ADDR: redis:6379
+      ACTIVE_EXPERIMENT_ID: checkout_button_color
+    ports:
+      - "8080:8080"
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  profile-consumer:
+    build:
+      context: .
+      args:
+        CMD_PATH: profile-consumer
+    environment:
+      <<: *common_env
+      SERVICE_NAME: profile-consumer
+      HTTP_ADDR: ":8081"
+    ports:
+      - "8081:8081"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  strategy-api:
+    build:
+      context: .
+      args:
+        CMD_PATH: strategy-api
+    environment:
+      <<: *common_env
+      SERVICE_NAME: strategy-api
+      HTTP_ADDR: ":8082"
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  pgdata:
